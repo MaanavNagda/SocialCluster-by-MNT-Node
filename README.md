@@ -29,8 +29,34 @@ browser window per service.
 
 - Python 3.10+
 - PySide6 (includes QtWebEngine)
+- git
 
-## Setup
+## Install (one-liner)
+
+Paste into a terminal (KDE Plasma/Wayland or any Linux desktop):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/MaanavNagda/SocialCluster/main/install.sh | bash
+```
+
+This clones the app into `~/.local/share/SocialCluster`, creates an
+isolated virtualenv there, installs a `social-cluster` launcher into
+`~/.local/bin`, and adds a desktop entry so "Social Cluster" appears in
+your application menu. It never uses `sudo` or installs system packages;
+if a system dependency is missing (e.g. `python3-venv` on Debian/Ubuntu)
+it tells you the exact command to run yourself.
+
+To update later, just re-run the same command — it does a `git pull` on
+the existing install instead of re-cloning.
+
+### Uninstall
+
+```bash
+rm -rf ~/.local/share/SocialCluster ~/.local/bin/social-cluster ~/.local/share/applications/social-cluster.desktop
+rm -rf ~/.config/SocialCluster   # optional: also remove saved settings
+```
+
+## Manual setup (for development)
 
 ```bash
 python3 -m venv venv
