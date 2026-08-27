@@ -610,6 +610,8 @@ class MainWindow(QMainWindow):
             self._update_tray_icon()
 
     def _effective_count(self, name):
+        if self._in_startup_grace(name):
+            return 0
         count = self._counts.get(name, 0)
         if count > 0:
             return count
