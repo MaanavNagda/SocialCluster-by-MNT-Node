@@ -196,6 +196,20 @@ class AppWebPage(QWebEnginePage):
             QWebEnginePage.WebBrowserBackgroundTab,
         ):
             return self._main_window.create_popup_tab().page()
+        if web_window_type in (
+            QWebEnginePage.WebDialog,
+            QWebEnginePage.WebBrowserWindow,
+        ):
+            # "Log in with Google/Facebook/etc." buttons open their OAuth
+            # flow via window.open(), which Chromium classifies as a
+            # WebDialog (or occasionally WebBrowserWindow) popup rather
+            # than a browser tab. Previously this case fell through to
+            # `return None`, which silently drops the window.open() call
+            # and makes every third-party login button do nothing. Give it
+            # a real popup window instead, sharing the same profile so the
+            # session cookies it sets are immediately visible to the
+            # opener tab once the popup closes.
+            return self._main_window.create_popup_window().page()
         return None
 
 
@@ -237,6 +251,7 @@ class MainWindow(QMainWindow):
         self._scraper_seen = {}
         self._icon_loader = IconLoader(self)
         self._app_icon_source = QPixmap(APP_ICON_PATH)
+        self._popup_windows = []
         self._services_debounce = QTimer(self)
         self._services_debounce.setSingleShot(True)
         self._services_debounce.timeout.connect(self._do_save_services)
@@ -510,6 +525,37 @@ class MainWindow(QMainWindow):
         item = QListWidgetItem("New", self._tab_bar)
         self._tab_bar.addItem(item)
         return view
+
+    def create_popup_window(self):
+        # Real top-level window (not an app tab) for OAuth-style "Log in
+        # with ..." popups, matching how a normal browser presents them.
+        # Shares self._profile (via AppWebView), so cookies set here are
+        # immediately visible to the tab that opened it.
+        view = AppWebView(self._profile, self)
+        window = QWidget(self, Qt.Window)
+        window.setWindowTitle("Sign in")
+        window.resize(480, 640)
+        layout = QVBoxLayout(window)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(view)
+        window.setAttribute(Qt.WA_DeleteOnClose)
+
+        # Most OAuth providers call window.close() themselves once the
+        # login flow finishes; honor that instead of leaving a dead popup.
+        view.page().windowCloseRequested.connect(window.close)
+        view.page().titleChanged.connect(
+            lambda title: window.setWindowTitle(title or "Sign in")
+        )
+
+        self._popup_windows.append(window)
+        window.destroyed.connect(lambda: self._forget_popup_window(window))
+
+        window.show()
+        return view
+
+    def _forget_popup_window(self, window):
+        if window in self._popup_windows:
+            self._popup_windows.remove(window)
 
     def _on_tab_clicked(self, item):
         row = self._tab_bar.row(item)
