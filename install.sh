@@ -69,6 +69,7 @@ Type=Application
 Name=Social Cluster
 Comment=Unified social media and messaging aggregator
 Exec=$LAUNCHER
+Icon=$INSTALL_DIR/social_cluster/assets/icon.png
 Terminal=false
 Categories=Network;InstantMessaging;
 StartupWMClass=SocialCluster

@@ -41,6 +41,9 @@ from social_cluster.tray import render_tray_icon
 from social_cluster.scrapers import SCRAPERS
 
 
+APP_ICON_PATH = os.path.join(os.path.dirname(__file__), "assets", "icon.png")
+
+
 NOTIFICATION_SCRIPT = """
 function sc_extract_count() {
     // Signals are checked in order of reliability and are NOT summed
@@ -222,6 +225,7 @@ class MainWindow(QMainWindow):
         self._scraper_fail_count = {}
         self._scraper_seen = {}
         self._icon_loader = IconLoader(self)
+        self._app_icon_source = QPixmap(APP_ICON_PATH)
         self._services_debounce = QTimer(self)
         self._services_debounce.setSingleShot(True)
         self._services_debounce.timeout.connect(self._do_save_services)
@@ -880,6 +884,35 @@ class MainWindow(QMainWindow):
                 painter.end()
                 return QIcon(pm)
 
+        # Default tray/app icon: the Social Cluster logo, with the usual
+        # red badge overlay drawn on top when there's aggregate unread
+        # activity but no single "top" service icon to attach it to yet
+        # (e.g. favicons still loading).
+        if not self._app_icon_source.isNull():
+            source = self._app_icon_source.scaled(
+                64, 64, Qt.KeepAspectRatio, Qt.SmoothTransformation
+            )
+            pm = QPixmap(64, 64)
+            pm.fill(Qt.transparent)
+            painter = QPainter(pm)
+            painter.setRenderHint(QPainter.Antialiasing)
+            x = (64 - source.width()) // 2
+            y = (64 - source.height()) // 2
+            painter.drawPixmap(x, y, source)
+            if badge != 0:
+                painter.setBrush(QColor("#ff3b30"))
+                painter.setPen(Qt.NoPen)
+                painter.drawEllipse(40, 40, 20, 20)
+                if badge > 0:
+                    painter.setPen(Qt.white)
+                    font = QFont("sans-serif", 10)
+                    font.setBold(True)
+                    painter.setFont(font)
+                    text = "99+" if badge > 99 else str(badge)
+                    painter.drawText(40, 40, 20, 20, Qt.AlignCenter, text)
+            painter.end()
+            return QIcon(pm)
+
         svg = render_tray_icon(badge, self._theme["primary"])
         image = QPixmap()
         if image.loadFromData(svg.encode("utf-8"), "svg"):
@@ -1064,6 +1097,8 @@ def main():
     app.setApplicationVersion(__version__)
     app.setOrganizationName("socialcluster")
     app.setStyle("Fusion")
+    if os.path.exists(APP_ICON_PATH):
+        app.setWindowIcon(QIcon(APP_ICON_PATH))
 
     # Use a current Chrome user agent so sites like WhatsApp Web allow the browser.
     user_agent = (
