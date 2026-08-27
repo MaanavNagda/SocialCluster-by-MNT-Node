@@ -1,0 +1,88 @@
+Social Cluster - Plan
+==============================
+
+Overview
+--------
+Build a Linux desktop social-media aggregator named 'Social Cluster' that runs a single Chromium web-engine instance (Qt WebEngine) inside one application process. Each service runs as a tab within that instance, with left/right/top/bottom tab bars, theme presets, system-tray integration with notification badges, and a notification watcher. The app is optimized to stay running in the background with minimal resource use and is intended to be packaged as an AppImage.
+
+Tech Stack
+----------
+- Language: Python 3
+- GUI framework: PySide6 (Qt 6; LGPL, better for AppImage distribution than PyQt6)
+- Web engine: PySide6-WebEngine (embedded Chromium; one application process, multiple tabs)
+- Single instance: QSharedMemory/QLockFile to prevent multiple app processes
+- System notifications: QSystemTrayIcon::showMessage and title/notification count polling
+- Icons: embedded emoji/SVG placeholders; dynamic tray icon badge overlay
+- Packaging: AppImage via PyInstaller + linuxdeploy/appimagetool (future step)
+
+Features
+--------
+1. Basic embedded browser
+   - A single QApplication with one QWebEngineProfile/Process (one Chromium engine instance).
+   - Each service gets a QWebEngineView tab, but they share the same browser context.
+   - Toolbar: Settings and Services buttons.
+   - Popups and new windows are blocked; external links stay inside the app.
+   - Only one Social Cluster process runs at a time.
+
+2. Services management
+   - "Services" tab/page lists popular social platforms:
+     Facebook, Twitter / X, Instagram, LinkedIn, Reddit, TikTok, YouTube,
+     WhatsApp Web, Telegram Web, Discord, Mastodon, Bluesky.
+   - Each service has an icon and a toggle to add/remove it.
+   - Adding a service creates a new tab with that icon.
+   - Removing a service removes the tab and stops its web view.
+
+3. Sidebar / tab bar
+   - Added services appear as tabs on the side chosen by the user.
+   - Tab position options: left, right, top, bottom.
+   - Clicking a tab switches the visible web view.
+   - Active tab is highlighted.
+
+4. Settings
+   - Themes (colour + light/dark):
+     amethyst, ruby, onyx, pearl, amber, emerald, sapphire, plus a light/dark toggle.
+   - Tab bar position: left, right, top, bottom.
+   - Minimize to system tray on close.
+   - Run in background.
+
+5. System tray behaviour
+   - When "minimize to system tray" is enabled, the close button hides the window and leaves an icon in the tray.
+   - The icon remains active and watches for notifications.
+   - When a notification arrives, overlay a badge on the tray icon and show a desktop notification.
+   - Left-clicking the tray icon restores the main window.
+
+6. Notification watcher
+   - Inject a small JavaScript snippet into each page to listen for changes in the document title or common notification indicators.
+   - When a new notification is detected, increment a per-service badge counter and update the tab badge.
+   - Emit a QSystemTrayIcon desktop notification when a message is received.
+
+7. Performance, security and packaging
+   - Singleton pattern prevents multiple browser processes.
+   - In the background, inactive tabs can be frozen/hidden and audio is muted.
+   - Tray icon uses lightweight badge overlay; notification polling is throttled.
+   - Popups are rejected; only HTTPS sites are trusted where possible.
+   - Packaged as an AppImage named 'Social Cluster' with .desktop and icon resources.
+
+UI / Styling
+------------
+- Main window has a top toolbar with "Services" and "Settings" buttons.
+- Tab bar uses the theme's primary colour for the active tab; inactive tabs use a darker/lighter shade.
+- Settings page uses a form layout with combo boxes and checkboxes.
+- Services page uses a grid/list of toggleable platform tiles with icon and name.
+- Tray icon uses a simple base icon plus a red/amber badge overlay when needed.
+
+Files
+-----
+- main.py              : application entry point
+- requirements.txt     : Python dependencies
+- config.py            : settings handling and defaults
+- themes.py            : theme colour maps
+- tray_icon.py         : badge overlay and tray icon logic
+- services.py          : default social media service list and metadata
+- notification_watcher.js : injected script for web-page notification detection
+
+Next Steps
+----------
+1. Confirm the chosen stack and dependencies.
+2. Create project files (main.py, UI components, settings, services, tray, themes).
+3. Run the application and verify tab switching, theming, and tray behaviour.

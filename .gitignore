@@ -1,0 +1,9 @@
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.env
+
+# Local app state (unread caches, service selection, tray/theme prefs) -
+# should not be committed since it's per-user runtime data, not source.
+config.json
