@@ -7,6 +7,7 @@ DEFAULT_CONFIG = {
     "tab_position": "left",
     "minimize_to_tray": True,
     "run_in_background": True,
+    "start_in_background": False,
     "active_services": [],
     "custom_services": [],
     "enabled_scrapers": None,

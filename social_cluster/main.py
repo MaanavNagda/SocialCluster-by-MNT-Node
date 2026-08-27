@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile, QWebEngineScript
 from PySide6.QtWebEngineWidgets import QWebEngineView
+from PySide6.QtNetwork import QLocalServer, QLocalSocket
 
 from social_cluster import APP_NAME, __version__
 from social_cluster.services import get_default_services, get_service_by_name
@@ -42,6 +43,16 @@ from social_cluster.scrapers import SCRAPERS
 
 
 APP_ICON_PATH = os.path.join(os.path.dirname(__file__), "assets", "icon.png")
+
+# Name for the single-instance IPC channel (QLocalServer/QLocalSocket). When
+# a second instance is launched (app menu, tray, running the binary again,
+# etc.) while one is already running, it connects here and asks the running
+# instance to raise its window instead of showing an "already running"
+# error, so relaunching always brings the GUI to front -- including when
+# the app is sitting in the background/tray after "start in background" or
+# after the window was closed to tray.
+IPC_SERVER_NAME = "SocialClusterIPC"
+IPC_SHOW_MESSAGE = b"show"
 
 
 NOTIFICATION_SCRIPT = """
@@ -237,6 +248,7 @@ class MainWindow(QMainWindow):
         self._rebuild_tabs()
         self._setup_tray()
         self._setup_watcher()
+        self._setup_ipc_server()
         self.setWindowTitle(APP_NAME)
         self.resize(1280, 800)
         if not self._config.get("active_services"):
@@ -252,6 +264,7 @@ class MainWindow(QMainWindow):
                 "tab_position": self._config.get("tab_position", "left"),
                 "minimize_to_tray": self._config.get("minimize_to_tray", True),
                 "run_in_background": self._config.get("run_in_background", True),
+                "start_in_background": self._config.get("start_in_background", False),
             }
 
     def _all_services(self):
@@ -429,6 +442,11 @@ class MainWindow(QMainWindow):
         self._background_check.setChecked(self._config.get("run_in_background", True))
         self._background_check.toggled.connect(self._auto_save_settings)
         layout.addRow(self._background_check)
+
+        self._start_in_background_check = QCheckBox("Start in background", self)
+        self._start_in_background_check.setChecked(self._config.get("start_in_background", False))
+        self._start_in_background_check.toggled.connect(self._auto_save_settings)
+        layout.addRow(self._start_in_background_check)
 
         buttons = QHBoxLayout()
         cancel_btn = QPushButton("Cancel", self)
@@ -795,6 +813,7 @@ class MainWindow(QMainWindow):
         self._config["tab_position"] = self._tab_position_combo.currentText()
         self._config["minimize_to_tray"] = self._minimize_check.isChecked()
         self._config["run_in_background"] = self._background_check.isChecked()
+        self._config["start_in_background"] = self._start_in_background_check.isChecked()
         save_config(self._config)
 
         self._theme = get_theme(self._config["theme"], self._config["dark_mode"])
@@ -806,7 +825,10 @@ class MainWindow(QMainWindow):
             app.setQuitOnLastWindowClosed(not self._config.get("run_in_background", True))
 
     def _cancel_settings(self):
-        for key in ("theme", "dark_mode", "tab_position", "minimize_to_tray", "run_in_background"):
+        for key in (
+            "theme", "dark_mode", "tab_position", "minimize_to_tray",
+            "run_in_background", "start_in_background",
+        ):
             self._config[key] = self._snapshots["settings"][key]
         save_config(self._config)
         self._theme_combo.setCurrentText(self._config["theme"])
@@ -814,6 +836,7 @@ class MainWindow(QMainWindow):
         self._tab_position_combo.setCurrentText(self._config["tab_position"])
         self._minimize_check.setChecked(self._config["minimize_to_tray"])
         self._background_check.setChecked(self._config["run_in_background"])
+        self._start_in_background_check.setChecked(self._config["start_in_background"])
         self._auto_save_settings()
 
     def _reset_settings(self):
@@ -823,6 +846,7 @@ class MainWindow(QMainWindow):
             "tab_position": "left",
             "minimize_to_tray": True,
             "run_in_background": True,
+            "start_in_background": False,
         }
         for key, value in defaults.items():
             self._config[key] = value
@@ -832,6 +856,7 @@ class MainWindow(QMainWindow):
         self._tab_position_combo.setCurrentText(self._config["tab_position"])
         self._minimize_check.setChecked(self._config["minimize_to_tray"])
         self._background_check.setChecked(self._config["run_in_background"])
+        self._start_in_background_check.setChecked(self._config["start_in_background"])
         self._auto_save_settings()
 
     # ---------------- System tray ---------------- #
@@ -959,6 +984,30 @@ class MainWindow(QMainWindow):
         self.showNormal()
         self.raise_()
         self.activateWindow()
+
+    # ---------------- Single-instance IPC ---------------- #
+
+    def _setup_ipc_server(self):
+        # Clean up a socket file left behind by a previous crash before
+        # listening, otherwise QLocalServer.listen() fails with
+        # AddressInUseError even though no instance is actually running.
+        QLocalServer.removeServer(IPC_SERVER_NAME)
+        self._ipc_server = QLocalServer(self)
+        self._ipc_server.newConnection.connect(self._on_ipc_connection)
+        self._ipc_server.listen(IPC_SERVER_NAME)
+
+    def _on_ipc_connection(self):
+        socket = self._ipc_server.nextPendingConnection()
+        if socket is None:
+            return
+        socket.readyRead.connect(lambda s=socket: self._on_ipc_data(s))
+        socket.disconnected.connect(socket.deleteLater)
+
+    def _on_ipc_data(self, socket):
+        data = bytes(socket.readAll())
+        if data.strip() == IPC_SHOW_MESSAGE:
+            self._show_window()
+        socket.disconnectFromServer()
 
     # ---------------- Notification watcher ---------------- #
 
@@ -1137,6 +1186,18 @@ def main():
     lock_path = os.path.join(tempfile.gettempdir(), "social_cluster.lock")
     lock = QLockFile(lock_path)
     if not lock.tryLock(100):
+        # Another instance is already running (e.g. relaunched from the app
+        # menu/tray, or the window is hidden after "start in background" /
+        # closing to tray). Ask it to raise its window instead of just
+        # erroring out, so relaunching always brings the GUI to front.
+        socket = QLocalSocket()
+        socket.connectToServer(IPC_SERVER_NAME)
+        if socket.waitForConnected(200):
+            socket.write(IPC_SHOW_MESSAGE)
+            socket.flush()
+            socket.waitForBytesWritten(200)
+            socket.disconnectFromServer()
+            sys.exit(0)
         QMessageBox.critical(None, APP_NAME, f"{APP_NAME} is already running.")
         sys.exit(1)
     app.aboutToQuit.connect(lock.unlock)
@@ -1145,5 +1206,10 @@ def main():
     app.setQuitOnLastWindowClosed(not config.get("run_in_background", True))
 
     window = MainWindow(config, profile)
-    window.show()
+    start_hidden = (
+        config.get("start_in_background", False)
+        and QSystemTrayIcon.isSystemTrayAvailable()
+    )
+    if not start_hidden:
+        window.show()
     sys.exit(app.exec())
