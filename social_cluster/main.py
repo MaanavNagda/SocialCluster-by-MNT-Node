@@ -29,7 +29,9 @@ from PySide6.QtWidgets import (
     QComboBox, QFormLayout, QLabel, QLineEdit, QSystemTrayIcon, QMenu, QMessageBox,
     QListWidget, QListWidgetItem, QSizePolicy, QBoxLayout,
 )
-from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile, QWebEngineScript
+from PySide6.QtWebEngineCore import (
+    QWebEnginePage, QWebEngineProfile, QWebEngineScript, QWebEngineUrlRequestInterceptor,
+)
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 
@@ -169,6 +171,23 @@ TAB_POSITIONS = {
     "top": QTabWidget.North,
     "bottom": QTabWidget.South,
 }
+
+
+# Some OAuth providers (notably Google) block sign-in with an "this
+# browser or app may not be secure" error when they detect an embedded
+# Chromium WebView, based on heuristics tied to the Chrome/QtWebEngine
+# user agent. Spoofing Firefox's UA sidesteps that specific check. This is
+# scoped to login popup windows only (via QWebEnginePage.setUrlRequestInterceptor,
+# not the shared profile), so it doesn't affect the UA already working for
+# the main service tabs (WhatsApp, Discord, etc.).
+FIREFOX_USER_AGENT = (
+    "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0"
+)
+
+
+class FirefoxUserAgentInterceptor(QWebEngineUrlRequestInterceptor):
+    def interceptRequest(self, info):
+        info.setHttpHeader(b"User-Agent", FIREFOX_USER_AGENT.encode("utf-8"))
 
 
 class AppWebPage(QWebEnginePage):
@@ -539,6 +558,14 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(view)
         window.setAttribute(Qt.WA_DeleteOnClose)
+
+        # Scoped to this popup only: some OAuth providers (Google in
+        # particular) refuse to complete sign-in from an embedded Chromium
+        # WebView ("This browser or app may not be secure"). Spoofing
+        # Firefox's UA for just this window sidesteps that check without
+        # touching the UA already working for the regular service tabs.
+        window._ua_interceptor = FirefoxUserAgentInterceptor(view.page())
+        view.page().setUrlRequestInterceptor(window._ua_interceptor)
 
         # Most OAuth providers call window.close() themselves once the
         # login flow finishes; honor that instead of leaving a dead popup.
