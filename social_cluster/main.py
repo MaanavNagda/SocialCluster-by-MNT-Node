@@ -632,9 +632,19 @@ class MainWindow(QMainWindow):
             and current_item.data(Qt.UserRole) == name
         )
         if not is_active:
+            if self._in_startup_grace(name):
+                # Ignore favicon churn while the page is still settling in
+                # after load/launch. Unlike _counts (which gets overwritten
+                # with the current real value on every poll and so
+                # self-corrects once grace ends), _icon_flags is a sticky
+                # boolean that only ever clears when the tab is clicked --
+                # so setting it here would leave a permanent false-positive
+                # tab badge for the rest of the session, not just a
+                # transient one during the grace window.
+                return
             was_flagged = self._icon_flags.get(name, False)
             self._icon_flags[name] = True
-            if not was_flagged and self._counts.get(name, 0) == 0 and not self._in_startup_grace(name):
+            if not was_flagged and self._counts.get(name, 0) == 0:
                 self._show_tray_notification(name, -1)
             self._update_tab_text()
             self._update_tray_icon()
