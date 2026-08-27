@@ -3,6 +3,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 
 # Must be set before QtWebEngine is initialized (i.e. before QApplication is
 # created / QtWebEngineCore is imported) so that background/minimized/hidden
@@ -152,6 +153,15 @@ SCRAPER_POLL_INTERVAL_MS = 1000
 # the two systems during a page reload or transient DOM state.
 SCRAPER_FAIL_THRESHOLD = 3
 
+# How long after a service tab finishes loading (page load or app launch,
+# including auto-launch in the background on login/boot) to treat any
+# unread state it reports as pre-existing rather than "new" -- otherwise
+# every launch fires a notification for whatever was already unread before
+# the app even opened, since the very first poll/scrape/favicon check has
+# no prior state to compare against. Real new activity that arrives after
+# this window still notifies normally.
+STARTUP_GRACE_SECONDS = 8
+
 
 def parse_notification_count(result):
     """Coerce a runJavaScript() result into a non-negative int count.
@@ -268,6 +278,7 @@ class MainWindow(QMainWindow):
         self._scraper_ok = {}
         self._scraper_fail_count = {}
         self._scraper_seen = {}
+        self._loading_grace = {}
         self._icon_loader = IconLoader(self)
         self._app_icon_source = QPixmap(APP_ICON_PATH)
         self._popup_windows = []
@@ -519,6 +530,9 @@ class MainWindow(QMainWindow):
                 view.iconChanged.connect(
                     lambda icon, _name=name: self._on_page_icon_changed(_name)
                 )
+                view.page().loadFinished.connect(
+                    lambda ok, _name=name: self._on_tab_load_finished(_name)
+                )
                 self._tabs[name] = view
 
             self._web_stack.addWidget(view)
@@ -601,6 +615,12 @@ class MainWindow(QMainWindow):
             return count
         return -1 if self._icon_flags.get(name) else 0
 
+    def _on_tab_load_finished(self, name):
+        self._loading_grace[name] = time.time() + STARTUP_GRACE_SECONDS
+
+    def _in_startup_grace(self, name):
+        return time.time() < self._loading_grace.get(name, 0)
+
     def _on_page_icon_changed(self, name):
         current_item = self._tab_bar.currentItem()
         is_active = (
@@ -612,7 +632,7 @@ class MainWindow(QMainWindow):
         if not is_active:
             was_flagged = self._icon_flags.get(name, False)
             self._icon_flags[name] = True
-            if not was_flagged and self._counts.get(name, 0) == 0:
+            if not was_flagged and self._counts.get(name, 0) == 0 and not self._in_startup_grace(name):
                 self._show_tray_notification(name, -1)
             self._update_tab_text()
             self._update_tray_icon()
@@ -669,7 +689,7 @@ class MainWindow(QMainWindow):
         if total > 0:
             self._icon_flags[name] = False
 
-        if new_items and not self.isActiveWindow():
+        if new_items and not self.isActiveWindow() and not self._in_startup_grace(name):
             if len(new_items) == 1:
                 sender, count, preview = new_items[0]
                 title = f"{name}: {sender}"
@@ -1125,7 +1145,7 @@ class MainWindow(QMainWindow):
         if count > 0:
             self._icon_flags[name] = False
 
-        if count > old and count > 0:
+        if count > old and count > 0 and not self._in_startup_grace(name):
             self._show_tray_notification(name, count)
 
         self._update_tab_text()
