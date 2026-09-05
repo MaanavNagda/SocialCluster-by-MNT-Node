@@ -36,7 +36,7 @@ from PySide6.QtWebEngineCore import (
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 
-from social_cluster import APP_NAME, __version__
+from social_cluster import APP_NAME, APP_TITLE, __version__
 from social_cluster.services import get_default_services, get_service_by_name
 from social_cluster.themes import get_theme, get_stylesheet, get_theme_names
 from social_cluster.config import load_config, save_config
@@ -294,7 +294,7 @@ class MainWindow(QMainWindow):
         self._setup_tray()
         self._setup_watcher()
         self._setup_ipc_server()
-        self.setWindowTitle(APP_NAME)
+        self.setWindowTitle(APP_TITLE)
         self.resize(1280, 800)
         if not self._config.get("active_services"):
             self._stack.setCurrentIndex(1)
@@ -1303,7 +1303,7 @@ def main():
             socket.waitForBytesWritten(200)
             socket.disconnectFromServer()
             sys.exit(0)
-        QMessageBox.critical(None, APP_NAME, f"{APP_NAME} is already running.")
+        QMessageBox.critical(None, APP_TITLE, f"{APP_NAME} is already running.")
         sys.exit(1)
     app.aboutToQuit.connect(lock.unlock)
 

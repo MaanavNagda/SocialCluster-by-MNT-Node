@@ -1,4 +1,4 @@
-# Social Cluster
+# SocialCluster by /MNT Node
 
 A single desktop app (PySide6 + QtWebEngine) that aggregates multiple social
 media / messaging web apps into one tabbed window, with unified system tray
@@ -36,12 +36,12 @@ browser window per service.
 Paste into a terminal (KDE Plasma/Wayland or any Linux desktop):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/MaanavNagda/SocialCluster/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/MaanavNagda/SocialCluster-by-MNT-Node/main/install.sh | bash
 ```
 
 This clones the app into `~/.local/share/SocialCluster`, creates an
 isolated virtualenv there, installs a `social-cluster` launcher into
-`~/.local/bin`, and adds a desktop entry so "Social Cluster" appears in
+`~/.local/bin`, and adds a desktop entry so "SocialCluster by /MNT Node" appears in
 your application menu. It never uses `sudo` or installs system packages;
 if a system dependency is missing (e.g. `python3-venv` on Debian/Ubuntu)
 it tells you the exact command to run yourself.

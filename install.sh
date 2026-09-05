@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Social Cluster installer.
+# SocialCluster by /MNT Node installer.
 #
 # Usage (paste into a terminal):
-#   curl -fsSL https://raw.githubusercontent.com/MaanavNagda/SocialCluster/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/MaanavNagda/SocialCluster-by-MNT-Node/main/install.sh | bash
 #
 # Clones/updates the app into ~/.local/share/SocialCluster, creates an
 # isolated Python virtualenv there, installs a `social-cluster` launcher
@@ -16,7 +16,7 @@
 
 set -euo pipefail
 
-REPO_URL="https://github.com/MaanavNagda/SocialCluster.git"
+REPO_URL="https://github.com/MaanavNagda/SocialCluster-by-MNT-Node.git"
 INSTALL_DIR="${SOCIAL_CLUSTER_INSTALL_DIR:-$HOME/.local/share/SocialCluster}"
 BIN_DIR="$HOME/.local/bin"
 DESKTOP_DIR="$HOME/.local/share/applications"
@@ -25,7 +25,7 @@ LAUNCHER="$BIN_DIR/social-cluster"
 log() { printf '==> %s\n' "$1"; }
 die() { printf 'error: %s\n' "$1" >&2; exit 1; }
 
-log "Social Cluster installer"
+log "SocialCluster by /MNT Node installer"
 
 command -v git >/dev/null 2>&1 || die "git is required but was not found on PATH."
 command -v python3 >/dev/null 2>&1 || die "python3 is required but was not found on PATH."
@@ -66,7 +66,7 @@ mkdir -p "$DESKTOP_DIR"
 cat > "$DESKTOP_DIR/social-cluster.desktop" <<EOF
 [Desktop Entry]
 Type=Application
-Name=Social Cluster
+Name=SocialCluster by /MNT Node
 Comment=Unified social media and messaging aggregator
 Exec=$LAUNCHER
 Icon=$INSTALL_DIR/social_cluster/assets/icon.png
@@ -84,4 +84,4 @@ case ":$PATH:" in
         ;;
 esac
 
-log "Done. Launch Social Cluster from your application menu, or run: social-cluster"
+log "Done. Launch SocialCluster from your application menu, or run: social-cluster"
