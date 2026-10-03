@@ -49,6 +49,22 @@ it tells you the exact command to run yourself.
 To update later, just re-run the same command — it does a `git pull` on
 the existing install instead of re-cloning.
 
+### Video playback (H.264/AAC)
+
+The pip-bundled Qt WebEngine ships without proprietary media codecs, so
+in-app video playback (WhatsApp statuses, Instagram reels, etc.) needs a
+codec-capable Qt build. Most distro-provided Qt6 WebEngine packages have
+them — the installer automatically probes and uses your **system**
+PySide6 bindings when they're codec-capable, falling back to the pip
+venv otherwise. If you see "The video can't be played", install your
+distro's Qt6 Python bindings (e.g. `python313-pyside6` on openSUSE,
+`pyside6` on Arch, `python3-pyside6.qtwebengine*` on Debian/Ubuntu) and
+re-run the installer. You can check anytime with:
+
+```bash
+python3 tools/webengine_codec_probe.py
+```
+
 ### Uninstall
 
 ```bash

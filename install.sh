@@ -53,11 +53,48 @@ rm -f /tmp/social-cluster-venv-error.log
 "$INSTALL_DIR/venv/bin/pip" install --upgrade pip >/dev/null
 "$INSTALL_DIR/venv/bin/pip" install -r "$INSTALL_DIR/requirements.txt"
 
+# --- Media codec check -----------------------------------------------------
+# The pip-bundled Qt WebEngine is built without proprietary codecs
+# (H.264/AAC), which many services need for video playback. Distro-provided
+# Qt6 WebEngine builds usually DO include them, so if the system python can
+# import PySide6/QtWebEngine bindings and they probe codec-capable, the
+# launcher prefers that interpreter. Nothing distro-specific is invoked --
+# we simply use what is already installed. The venv remains the fallback.
+APP_PYTHON="$INSTALL_DIR/venv/bin/python"
+PROBE="$INSTALL_DIR/tools/webengine_codec_probe.py"
+
+codec_probe() {  # $1 = python interpreter
+    [ -f "$PROBE" ] || return 1
+    "$1" "$PROBE" >/dev/null 2>&1
+}
+
+log "Checking Qt WebEngine media codec support"
+if codec_probe "$APP_PYTHON"; then
+    :
+elif command -v python3 >/dev/null 2>&1 \
+     && python3 -c "import PySide6.QtWebEngineCore" >/dev/null 2>&1 \
+     && codec_probe python3; then
+    APP_PYTHON="$(command -v python3)"
+    log "Using system Python -- its Qt WebEngine has proprietary codecs"
+else
+    cat <<'WARN'
+==> NOTE: no codec-capable Qt WebEngine found. The app works, but video
+    playback inside services (WhatsApp, Instagram, ...) may fail: the
+    pip-bundled Qt lacks H.264/AAC for licensing reasons.
+    To enable video, install your distro's Qt6 PySide6 bindings and re-run
+    this installer (it will auto-detect them). Examples:
+      openSUSE:      sudo zypper install python313-pyside6
+      Arch:          sudo pacman -S pyside6
+      Debian/Ubuntu: sudo apt install python3-pyside6.qtwebengine*
+      Fedora:        enable RPM Fusion, then 'dnf install python3-pyside6'
+WARN
+fi
+
 log "Installing launcher to $LAUNCHER"
 mkdir -p "$BIN_DIR"
 cat > "$LAUNCHER" <<EOF
 #!/usr/bin/env bash
-exec "$INSTALL_DIR/venv/bin/python" "$INSTALL_DIR/main.py" "\$@"
+exec "\${SOCIAL_CLUSTER_PYTHON:-$APP_PYTHON}" "$INSTALL_DIR/main.py" "\$@"
 EOF
 chmod +x "$LAUNCHER"
 
