@@ -22,6 +22,8 @@ browser window per service.
     notification for any service without a working scraper, or if a
     scraper's selectors break.
 - Multiple color themes with light/dark mode (`social_cluster/themes.py`).
+- Ctrl+Shift+U unicode input (IBus-style hex codepoint entry) inside web-app
+  text fields and the app's own line edits (`social_cluster/unicode_input.py`).
 - Configurable tab position (left/right/top/bottom), minimize-to-tray, and
   run-in-background behavior.
 

@@ -43,6 +43,7 @@ from social_cluster.config import load_config, save_config
 from social_cluster.icons import IconLoader
 from social_cluster.tray import render_tray_icon
 from social_cluster.scrapers import SCRAPERS
+from social_cluster.unicode_input import UNICODE_INPUT_JS, UnicodeLineEditFilter
 
 
 APP_ICON_PATH = os.path.join(os.path.dirname(__file__), "assets", "icon.png")
@@ -246,6 +247,12 @@ class AppWebView(QWebEngineView):
     def __init__(self, profile, main_window, parent=None):
         super().__init__(parent)
         self.setPage(AppWebPage(profile, main_window, self))
+        if main_window is not None:
+            # The page's unicode-input enable flag lives on window, so it is
+            # reset by every navigation and must be re-pushed after each load.
+            self.page().loadFinished.connect(
+                lambda _ok: main_window._sync_unicode_flags()
+            )
 
 
 class TabBarList(QListWidget):
@@ -280,6 +287,8 @@ class MainWindow(QMainWindow):
         self._scraper_seen = {}
         self._loading_grace = {}
         self._icon_loader = IconLoader(self)
+        self._unicode_filter = UnicodeLineEditFilter(self._config, self._theme, self)
+        QApplication.instance().installEventFilter(self._unicode_filter)
         self._app_icon_source = QPixmap(APP_ICON_PATH)
         self._popup_windows = []
         self._services_debounce = QTimer(self)
@@ -310,6 +319,7 @@ class MainWindow(QMainWindow):
                 "minimize_to_tray": self._config.get("minimize_to_tray", True),
                 "run_in_background": self._config.get("run_in_background", True),
                 "start_in_background": self._config.get("start_in_background", False),
+                "unicode_input": self._config.get("unicode_input", True),
             }
 
     def _all_services(self):
@@ -493,6 +503,11 @@ class MainWindow(QMainWindow):
         self._start_in_background_check.toggled.connect(self._auto_save_settings)
         layout.addRow(self._start_in_background_check)
 
+        self._unicode_check = QCheckBox("Unicode input (Ctrl+Shift+U)", self)
+        self._unicode_check.setChecked(self._config.get("unicode_input", True))
+        self._unicode_check.toggled.connect(self._auto_save_settings)
+        layout.addRow(self._unicode_check)
+
         buttons = QHBoxLayout()
         cancel_btn = QPushButton("Cancel", self)
         cancel_btn.clicked.connect(self._cancel_settings)
@@ -619,6 +634,21 @@ class MainWindow(QMainWindow):
 
     def _on_tab_load_finished(self, name):
         self._loading_grace[name] = time.time() + STARTUP_GRACE_SECONDS
+
+    def _sync_unicode_flags(self):
+        # The injected unicode-input script reads window.__scUnicodeEnabled
+        # at keydown time; push the current setting into every loaded page
+        # (service tabs, popup tabs, and popup windows).
+        enabled = "true" if self._config.get("unicode_input", True) else "false"
+        js = f"window.__scUnicodeEnabled = {enabled};"
+        for i in range(self._web_stack.count()):
+            view = self._web_stack.widget(i)
+            if isinstance(view, QWebEngineView) and view.page() is not None:
+                view.page().runJavaScript(js)
+        for window in self._popup_windows:
+            for view in window.findChildren(QWebEngineView):
+                if view.page() is not None:
+                    view.page().runJavaScript(js)
 
     def _in_startup_grace(self, name):
         return time.time() < self._loading_grace.get(name, 0)
@@ -807,6 +837,7 @@ class MainWindow(QMainWindow):
 
     def _apply_theme(self):
         self.setStyleSheet(get_stylesheet(self._theme))
+        self._unicode_filter.set_theme(self._theme)
         app = QApplication.instance()
         if app is not None:
             app.setPalette(self._make_palette())
@@ -919,11 +950,13 @@ class MainWindow(QMainWindow):
         self._config["minimize_to_tray"] = self._minimize_check.isChecked()
         self._config["run_in_background"] = self._background_check.isChecked()
         self._config["start_in_background"] = self._start_in_background_check.isChecked()
+        self._config["unicode_input"] = self._unicode_check.isChecked()
         save_config(self._config)
 
         self._theme = get_theme(self._config["theme"], self._config["dark_mode"])
         self._apply_theme()
         self._apply_tab_position()
+        self._sync_unicode_flags()
 
         app = QApplication.instance()
         if app is not None:
@@ -932,7 +965,7 @@ class MainWindow(QMainWindow):
     def _cancel_settings(self):
         for key in (
             "theme", "dark_mode", "tab_position", "minimize_to_tray",
-            "run_in_background", "start_in_background",
+            "run_in_background", "start_in_background", "unicode_input",
         ):
             self._config[key] = self._snapshots["settings"][key]
         save_config(self._config)
@@ -942,6 +975,7 @@ class MainWindow(QMainWindow):
         self._minimize_check.setChecked(self._config["minimize_to_tray"])
         self._background_check.setChecked(self._config["run_in_background"])
         self._start_in_background_check.setChecked(self._config["start_in_background"])
+        self._unicode_check.setChecked(self._config["unicode_input"])
         self._auto_save_settings()
 
     def _reset_settings(self):
@@ -952,6 +986,7 @@ class MainWindow(QMainWindow):
             "minimize_to_tray": True,
             "run_in_background": True,
             "start_in_background": False,
+            "unicode_input": True,
         }
         for key, value in defaults.items():
             self._config[key] = value
@@ -962,6 +997,7 @@ class MainWindow(QMainWindow):
         self._minimize_check.setChecked(self._config["minimize_to_tray"])
         self._background_check.setChecked(self._config["run_in_background"])
         self._start_in_background_check.setChecked(self._config["start_in_background"])
+        self._unicode_check.setChecked(self._config["unicode_input"])
         self._auto_save_settings()
 
     # ---------------- System tray ---------------- #
@@ -1287,6 +1323,18 @@ def main():
     script_deferred.setWorldId(QWebEngineScript.MainWorld)
     script_deferred.setRunsOnSubFrames(True)
     profile.scripts().insert(script_deferred)
+
+    # Ctrl+Shift+U unicode codepoint entry inside web-app text fields
+    # (QtWebEngine doesn't route IBus's unicode input to web content).
+    # DocumentCreation so the keydown listener exists before the page can
+    # receive input; the script is dormant until the shortcut is pressed.
+    script_unicode = QWebEngineScript()
+    script_unicode.setName("unicode-input")
+    script_unicode.setSourceCode(UNICODE_INPUT_JS)
+    script_unicode.setInjectionPoint(QWebEngineScript.DocumentCreation)
+    script_unicode.setWorldId(QWebEngineScript.MainWorld)
+    script_unicode.setRunsOnSubFrames(True)
+    profile.scripts().insert(script_unicode)
 
     lock_path = os.path.join(tempfile.gettempdir(), "social_cluster.lock")
     lock = QLockFile(lock_path)
