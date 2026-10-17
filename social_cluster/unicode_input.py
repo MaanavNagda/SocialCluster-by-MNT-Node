@@ -5,8 +5,8 @@ Two layers covering every text field in the app:
 - ``UNICODE_INPUT_JS`` is injected into every page/frame of the shared
   QWebEngineProfile so web-app fields (contenteditable composers like
   WhatsApp/Discord, plus inputs and textareas) get the shortcut natively.
-- ``UnicodeLineEditFilter`` is an application-level event filter that gives
-  the same shortcut to the app's own native QLineEdit fields.
+- ``UnicodeLineEditFilter`` is a per-widget event filter that gives the
+  same shortcut to the app's own native QLineEdit fields.
 
 Both use the same interaction: Ctrl+Shift+U starts capture, up to 6 hex
 digits are typed (shown in a floating "u<hex>" indicator), Enter or Space
@@ -358,12 +358,19 @@ UNICODE_INPUT_JS = r"""
 
 
 class UnicodeLineEditFilter(QObject):
-    """Application-level event filter adding IBus-style Ctrl+Shift+U entry.
+    """Event filter adding IBus-style Ctrl+Shift+U entry to a QLineEdit.
 
     While a capture session is active on a QLineEdit, hex digits are
     swallowed, a small "u<hex>" indicator is overlaid on the widget, and
     Enter/Space inserts the character at the cursor. Escape cancels; any
     other key cancels and passes through.
+
+    One instance can be shared by any number of widgets; attach it with
+    install_on(). It must NOT be installed on QApplication: app-level
+    filters run for every event on every QObject, including Qt-internal
+    C++-created objects (e.g. QtWebEngine's delegate widgets), and PySide6
+    can segfault wrapping those objects when dispatching to a Python
+    filter (getWrapperForQObject).
     """
 
     def __init__(self, config, theme, parent=None):
@@ -373,6 +380,10 @@ class UnicodeLineEditFilter(QObject):
         self._target = None
         self._label = None
         self._digits = ""
+
+    def install_on(self, widget):
+        """Attach this filter to a QLineEdit (see class docstring)."""
+        widget.installEventFilter(self)
 
     def set_theme(self, theme):
         self._theme = theme

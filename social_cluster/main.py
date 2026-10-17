@@ -288,7 +288,6 @@ class MainWindow(QMainWindow):
         self._loading_grace = {}
         self._icon_loader = IconLoader(self)
         self._unicode_filter = UnicodeLineEditFilter(self._config, self._theme, self)
-        QApplication.instance().installEventFilter(self._unicode_filter)
         self._app_icon_source = QPixmap(APP_ICON_PATH)
         self._popup_windows = []
         self._services_debounce = QTimer(self)
@@ -445,6 +444,10 @@ class MainWindow(QMainWindow):
         self._custom_name_edit.setPlaceholderText("Name")
         self._custom_url_edit = QLineEdit(self)
         self._custom_url_edit.setPlaceholderText("https://example.com")
+        # Per-widget install only -- installing this filter on QApplication
+        # crashes PySide6 when events reach Qt-internal C++ objects.
+        self._unicode_filter.install_on(self._custom_name_edit)
+        self._unicode_filter.install_on(self._custom_url_edit)
         add_btn = QPushButton("Add custom service", self)
         add_btn.clicked.connect(self._add_custom_service)
         custom_form.addWidget(self._custom_name_edit)

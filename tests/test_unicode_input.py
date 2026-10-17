@@ -84,12 +84,12 @@ class TestUnicodeLineEditFilter(unittest.TestCase):
     def setUp(self):
         self.config = dict(DEFAULT_CONFIG)
         self.filter = UnicodeLineEditFilter(self.config, _TEST_THEME)
-        self.app.installEventFilter(self.filter)
         self.edit = QLineEdit()
+        self.filter.install_on(self.edit)
 
     def tearDown(self):
         self.filter._cancel()
-        self.app.removeEventFilter(self.filter)
+        self.edit.removeEventFilter(self.filter)
         self.edit.deleteLater()
 
     def _send(self, key, modifiers=Qt.NoModifier, text=""):
@@ -200,8 +200,15 @@ class TestUnicodeLineEditFilter(unittest.TestCase):
         self._send(Qt.Key_Return, Qt.NoModifier, "\r")
         self.assertEqual(self.edit.text(), "a\u00e9b")
 
-    def test_keys_for_other_widget_cancel(self):
+    def test_focus_out_cancels(self):
+        self._trigger()
+        self._type("1f")
+        QApplication.sendEvent(self.edit, QEvent(QEvent.FocusOut))
+        self.assertIsNone(self.filter._target)
+
+    def test_key_for_other_filtered_widget_cancels(self):
         other = QLineEdit()
+        self.filter.install_on(other)
         try:
             self._trigger()
             QApplication.sendEvent(other, _key(Qt.Key_X, Qt.NoModifier, "x"))
