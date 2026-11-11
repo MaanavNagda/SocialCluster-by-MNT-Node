@@ -9,6 +9,7 @@ DEFAULT_CONFIG = {
     "run_in_background": True,
     "start_in_background": False,
     "unicode_input": True,
+    "open_external_links": True,
     "active_services": [],
     "custom_services": [],
     "enabled_scrapers": None,

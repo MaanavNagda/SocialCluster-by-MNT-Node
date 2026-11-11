@@ -23,7 +23,7 @@ os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = " ".join(
 )
 
 from PySide6.QtCore import Qt, QUrl, QTimer, QCoreApplication, QLockFile, QSize, QStandardPaths
-from PySide6.QtGui import QIcon, QPixmap, QFont, QPainter, QColor, QAction, QPalette
+from PySide6.QtGui import QIcon, QPixmap, QFont, QPainter, QColor, QAction, QPalette, QDesktopServices
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QStackedWidget, QTabWidget, QToolBar, QPushButton, QCheckBox,
@@ -176,6 +176,31 @@ def parse_notification_count(result):
         return 0
 
 
+# URL schemes that must never be handed to the OS: they are either script
+# or embedded-content schemes with no meaning outside a page context.
+_NON_EXTERNAL_SCHEMES = {"javascript", "data", "blob", "about"}
+
+
+def _is_external_host(link_host, base_host):
+    """True when ``link_host`` is a different site than ``base_host``.
+
+    Hosts are compared at dot boundaries so a service and its subdomains
+    (``web.whatsapp.com`` vs ``whatsapp.com``, ``mail.google.com`` vs
+    ``google.com``) count as the same site and keep navigating in-app,
+    matching how a real browser tab behaves. Lookalike domains such as
+    ``notyoutube.com`` do NOT match ``youtube.com``.
+    """
+    if not link_host or not base_host:
+        return True
+    link_host = link_host.lower()
+    base_host = base_host.lower()
+    return not (
+        link_host == base_host
+        or link_host.endswith("." + base_host)
+        or base_host.endswith("." + link_host)
+    )
+
+
 TAB_POSITIONS = {
     "left": QTabWidget.West,
     "right": QTabWidget.East,
@@ -202,9 +227,15 @@ class FirefoxUserAgentInterceptor(QWebEngineUrlRequestInterceptor):
 
 
 class AppWebPage(QWebEnginePage):
-    def __init__(self, profile, main_window, parent=None):
+    def __init__(self, profile, main_window, parent=None, opener_host=None):
         super().__init__(profile, parent)
         self._main_window = main_window
+        # Set only for target=_blank / window.open() popup tabs: the host
+        # of the page that opened them. The popup's first main-frame
+        # navigation then decides whether it stays in-app (same site) or
+        # is handed to the system browser (external link).
+        self._opener_host = opener_host
+        self._popup_nav_pending = opener_host is not None
         self.featurePermissionRequested.connect(self._on_feature_permission)
 
     def _on_feature_permission(self, securityOrigin, feature):
@@ -218,6 +249,65 @@ class AppWebPage(QWebEnginePage):
                 QWebEnginePage.PermissionGrantedByUser,
             )
 
+    def acceptNavigationRequest(self, requestUrl, navigationType, isMainFrame):
+        if isMainFrame and self._intercept_external(navigationType, requestUrl):
+            return False
+        return super().acceptNavigationRequest(requestUrl, navigationType, isMainFrame)
+
+    def _intercept_external(self, navigationType, requestUrl):
+        """Hand outbound links to the OS default browser.
+
+        Returns True when the navigation was intercepted (the caller must
+        reject it), False to let the web engine proceed normally.
+        """
+        if self._main_window is None:
+            return False
+
+        scheme = requestUrl.scheme().lower()
+        if scheme not in ("http", "https"):
+            # mailto:, tel:, slack:// etc. have no place inside an embedded
+            # webview -- hand them to the OS. Script/embedded-content
+            # schemes are left alone.
+            if (
+                scheme
+                and scheme not in _NON_EXTERNAL_SCHEMES
+                and self._main_window._config.get("open_external_links", True)
+            ):
+                QDesktopServices.openUrl(requestUrl)
+                return True
+            return False
+
+        # The popup's first real navigation consumes its one-shot decision
+        # flag even while the feature is toggled off, so a stale flag can't
+        # misfire on a later navigation.
+        popup_first_nav = self._popup_nav_pending
+        if popup_first_nav:
+            self._popup_nav_pending = False
+
+        if not self._main_window._config.get("open_external_links", True):
+            return False
+
+        # A popup tab's first main-frame navigation IS the link that opened
+        # it: same site as the opener stays in-app, anything else goes to
+        # the system browser and the empty popup tab is discarded.
+        if popup_first_nav:
+            if _is_external_host(requestUrl.host(), self._opener_host):
+                QDesktopServices.openUrl(requestUrl)
+                self._main_window._discard_popup_page(self)
+                return True
+            return False
+
+        # Regular pages: only genuine link clicks are intercepted. Redirects,
+        # form submissions, reloads and back/forward stay in-app so service
+        # auth flows and in-site navigation keep working.
+        if (
+            navigationType == QWebEnginePage.NavigationTypeLinkClicked
+            and _is_external_host(requestUrl.host(), self.url().host())
+        ):
+            QDesktopServices.openUrl(requestUrl)
+            return True
+        return False
+
     def createWindow(self, web_window_type):
         if not self._main_window:
             return None
@@ -225,7 +315,9 @@ class AppWebPage(QWebEnginePage):
             QWebEnginePage.WebBrowserTab,
             QWebEnginePage.WebBrowserBackgroundTab,
         ):
-            return self._main_window.create_popup_tab().page()
+            return self._main_window.create_popup_tab(
+                opener_host=self.url().host()
+            ).page()
         if web_window_type in (
             QWebEnginePage.WebDialog,
             QWebEnginePage.WebBrowserWindow,
@@ -244,9 +336,13 @@ class AppWebPage(QWebEnginePage):
 
 
 class AppWebView(QWebEngineView):
-    def __init__(self, profile, main_window, parent=None):
+    def __init__(self, profile, main_window, parent=None, opener_host=None):
         super().__init__(parent)
-        self.setPage(AppWebPage(profile, main_window, self))
+        self._app_page = AppWebPage(profile, main_window, self, opener_host=opener_host)
+        self.setPage(self._app_page)
+        # Direct reference (not a page() lookup) so popup cleanup never
+        # depends on wrapper identity.
+        self._app_page._view = self
         if main_window is not None:
             # The page's unicode-input enable flag lives on window, so it is
             # reset by every navigation and must be re-pushed after each load.
@@ -319,6 +415,7 @@ class MainWindow(QMainWindow):
                 "run_in_background": self._config.get("run_in_background", True),
                 "start_in_background": self._config.get("start_in_background", False),
                 "unicode_input": self._config.get("unicode_input", True),
+                "open_external_links": self._config.get("open_external_links", True),
             }
 
     def _all_services(self):
@@ -511,6 +608,11 @@ class MainWindow(QMainWindow):
         self._unicode_check.toggled.connect(self._auto_save_settings)
         layout.addRow(self._unicode_check)
 
+        self._open_external_check = QCheckBox("Open external links in system browser", self)
+        self._open_external_check.setChecked(self._config.get("open_external_links", True))
+        self._open_external_check.toggled.connect(self._auto_save_settings)
+        layout.addRow(self._open_external_check)
+
         buttons = QHBoxLayout()
         cancel_btn = QPushButton("Cancel", self)
         cancel_btn.clicked.connect(self._cancel_settings)
@@ -569,13 +671,30 @@ class MainWindow(QMainWindow):
 
         self._update_tab_text()
 
-    def create_popup_tab(self):
-        view = AppWebView(self._profile, self)
+    def create_popup_tab(self, opener_host=None):
+        view = AppWebView(self._profile, self, opener_host=opener_host)
         view.setToolTip("Popup")
         self._web_stack.addWidget(view)
         item = QListWidgetItem("New", self._tab_bar)
+        # Kept on the view so _discard_popup_page can find the tab bar row
+        # even after the user has dragged tabs into a different order.
+        view._popup_tab_item = item
         self._tab_bar.addItem(item)
         return view
+
+    def _discard_popup_page(self, page):
+        """Remove a target=_blank popup tab after its first navigation was
+        handed to the system browser, so no dead "New" tab is left behind."""
+        view = getattr(page, "_view", None)
+        if view is None:
+            return
+        item = getattr(view, "_popup_tab_item", None)
+        self._web_stack.removeWidget(view)
+        view.deleteLater()
+        if item is not None:
+            row = self._tab_bar.row(item)
+            if row >= 0:
+                self._tab_bar.takeItem(row)
 
     def create_popup_window(self):
         # Real top-level window (not an app tab) for OAuth-style "Log in
@@ -954,6 +1073,7 @@ class MainWindow(QMainWindow):
         self._config["run_in_background"] = self._background_check.isChecked()
         self._config["start_in_background"] = self._start_in_background_check.isChecked()
         self._config["unicode_input"] = self._unicode_check.isChecked()
+        self._config["open_external_links"] = self._open_external_check.isChecked()
         save_config(self._config)
 
         self._theme = get_theme(self._config["theme"], self._config["dark_mode"])
@@ -969,6 +1089,7 @@ class MainWindow(QMainWindow):
         for key in (
             "theme", "dark_mode", "tab_position", "minimize_to_tray",
             "run_in_background", "start_in_background", "unicode_input",
+            "open_external_links",
         ):
             self._config[key] = self._snapshots["settings"][key]
         save_config(self._config)
@@ -979,6 +1100,7 @@ class MainWindow(QMainWindow):
         self._background_check.setChecked(self._config["run_in_background"])
         self._start_in_background_check.setChecked(self._config["start_in_background"])
         self._unicode_check.setChecked(self._config["unicode_input"])
+        self._open_external_check.setChecked(self._config["open_external_links"])
         self._auto_save_settings()
 
     def _reset_settings(self):
@@ -990,6 +1112,7 @@ class MainWindow(QMainWindow):
             "run_in_background": True,
             "start_in_background": False,
             "unicode_input": True,
+            "open_external_links": True,
         }
         for key, value in defaults.items():
             self._config[key] = value
@@ -1001,6 +1124,7 @@ class MainWindow(QMainWindow):
         self._background_check.setChecked(self._config["run_in_background"])
         self._start_in_background_check.setChecked(self._config["start_in_background"])
         self._unicode_check.setChecked(self._config["unicode_input"])
+        self._open_external_check.setChecked(self._config["open_external_links"])
         self._auto_save_settings()
 
     # ---------------- System tray ---------------- #

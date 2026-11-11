@@ -9,6 +9,10 @@ browser window per service.
 
 - Tabbed browser view embedding each service's real web app (WhatsApp Web,
   Discord, Instagram, etc.) via `QWebEngineView`.
+- Links to other sites open in the device's default browser instead of
+  navigating inside the app (same-site navigation, `target=_blank` popups,
+  and `mailto:`/`tel:`-style links are handled the same way a real browser
+  would); toggle via Settings → "Open external links in system browser".
 - Configurable list of default and custom services (`social_cluster/services.py`).
 - Combined system tray icon with an aggregate unread badge across all
   services.
