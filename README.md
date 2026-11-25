@@ -28,6 +28,11 @@ browser window per service.
 - Multiple color themes with light/dark mode (`social_cluster/themes.py`).
 - Ctrl+Shift+U unicode input (IBus-style hex codepoint entry) inside web-app
   text fields and the app's own line edits (`social_cluster/unicode_input.py`).
+- Optional conversion of typed emoticons such as `:)`, `:(`, `:D`, and `<3`
+  into emoji inside web-app text fields and the app's own line edits. This is
+  disabled by default; enable it via Settings → "Convert typed emoticons to
+  emoji". Conversion is word-boundary-aware, so URLs such as `https://` are
+  left unchanged.
 - Configurable tab position (left/right/top/bottom), minimize-to-tray, and
   run-in-background behavior.
 
@@ -105,6 +110,8 @@ main.py                     # entry point
 social_cluster/
   main.py                   # QMainWindow, tabs, tray, notification polling
   config.py                 # load/save JSON config (XDG config dir)
+  emoticons.py              # shared emoticon mapping and replacement helpers
+  emoticon_input.py         # native-line-edit typed emoticon conversion
   services.py               # default service list (name + URL)
   themes.py                 # color themes / stylesheet generation
   tray.py                   # tray icon SVG rendering

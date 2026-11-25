@@ -1,21 +1,26 @@
-"""Ctrl+Shift+U unicode codepoint entry (IBus-style).
+"""Keyboard input enhancements for web and native text fields.
 
 Two layers covering every text field in the app:
 
 - ``UNICODE_INPUT_JS`` is injected into every page/frame of the shared
   QWebEngineProfile so web-app fields (contenteditable composers like
-  WhatsApp/Discord, plus inputs and textareas) get the shortcut natively.
+  WhatsApp/Discord, plus inputs and textareas) get Ctrl+Shift+U unicode
+  input and optional typed-emoticon conversion natively.
 - ``UnicodeLineEditFilter`` is a per-widget event filter that gives the
-  same shortcut to the app's own native QLineEdit fields.
+  same unicode-input shortcut to the app's own native QLineEdit fields.
 
-Both use the same interaction: Ctrl+Shift+U starts capture, up to 6 hex
-digits are typed (shown in a floating "u<hex>" indicator), Enter or Space
-inserts the character, Escape cancels, and any other key cancels and is
-passed through normally.
+Unicode input uses the same interaction in both layers: Ctrl+Shift+U starts
+capture, up to 6 hex digits are typed (shown in a floating "u<hex>"
+indicator), Enter or Space inserts the character, Escape cancels, and any
+other key cancels and is passed through normally.
 """
+
+import json
 
 from PySide6.QtCore import QEvent, QObject, Qt, QTimer
 from PySide6.QtWidgets import QLabel, QLineEdit
+
+from social_cluster.emoticons import EMOTICON_MAP
 
 MAX_DIGITS = 6
 _HEX_DIGITS = frozenset("0123456789abcdefABCDEF")
@@ -23,6 +28,8 @@ _HEX_DIGITS = frozenset("0123456789abcdefABCDEF")
 # Qt.KeypadModifier (0x20000000) is OR'd into event.key() for numpad keys;
 # strip it so numpad digits map to hex like the top-row number row does.
 _KEYPAD_MODIFIER = Qt.KeypadModifier.value
+
+EMOTICON_MAP_JSON = json.dumps(EMOTICON_MAP, ensure_ascii=False, separators=(",", ":"))
 
 
 def hex_to_char(digits):
@@ -44,6 +51,16 @@ def hex_to_char(digits):
         return None
 
 
+def input_flags_js(config):
+    """Return JS that publishes the current input-feature settings to a page."""
+    unicode_enabled = "true" if config.get("unicode_input", True) else "false"
+    emoticons_enabled = "true" if config.get("emoticons_to_emoji", False) else "false"
+    return (
+        f"window.__scUnicodeEnabled = {unicode_enabled};"
+        f"window.__scEmoticonsEnabled = {emoticons_enabled};"
+    )
+
+
 UNICODE_INPUT_JS = r"""
 (function() {
     if (window.__scUnicodeInputInit) {
@@ -53,6 +70,14 @@ UNICODE_INPUT_JS = r"""
 
     var MAX_DIGITS = 6;
     var session = null;  // {digits: string, ui: {host, inner}} while capturing
+    var EMOTICON_MAP = __EMOTICON_MAP_JSON__;
+    var EMOTICON_KEYS = Object.keys(EMOTICON_MAP).sort(function(a, b) {
+        return b.length - a.length;
+    });
+    var MAX_EMOTICON_LENGTH = EMOTICON_KEYS.reduce(function(max, key) {
+        return Math.max(max, key.length);
+    }, 0);
+    var WORD_CHAR_RE = /[\p{L}\p{N}_]/u;
 
     function focusedEditable() {
         var el = document.activeElement;
@@ -81,6 +106,133 @@ UNICODE_INPUT_JS = r"""
             return textTypes[type] ? el : null;
         }
         return null;
+    }
+
+    function selectionForEditable(el) {
+        var root = el.getRootNode ? el.getRootNode() : document;
+        return (root && root.getSelection) ? root.getSelection() : window.getSelection();
+    }
+
+    function textBeforeCaret(el, maxChars) {
+        if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
+            if (el.selectionStart === null || el.selectionStart === undefined ||
+                    el.selectionStart !== el.selectionEnd) {
+                return null;
+            }
+            return el.value.slice(
+                Math.max(0, el.selectionStart - maxChars),
+                el.selectionStart
+            );
+        }
+        var sel = selectionForEditable(el);
+        if (!sel || sel.rangeCount === 0 || !sel.isCollapsed) {
+            return null;
+        }
+        try {
+            var caret = sel.getRangeAt(0);
+            var range = document.createRange();
+            range.selectNodeContents(el);
+            range.setEnd(caret.endContainer, caret.endOffset);
+            return range.toString().slice(-maxChars);
+        } catch (err) {
+            return null;
+        }
+    }
+
+    function emoticonMatch(text) {
+        for (var i = 0; i < EMOTICON_KEYS.length; i++) {
+            var emoticon = EMOTICON_KEYS[i];
+            if (text.slice(-emoticon.length) === emoticon) {
+                return {emoticon: emoticon, emoji: EMOTICON_MAP[emoticon]};
+            }
+        }
+        return null;
+    }
+
+    function selectCharactersBeforeCaret(el, expected) {
+        if (!expected) {
+            return true;
+        }
+        var sel = selectionForEditable(el);
+        if (!sel || sel.rangeCount === 0 || !sel.isCollapsed || !sel.modify) {
+            return false;
+        }
+        var originalRange = sel.getRangeAt(0).cloneRange();
+        for (var i = 0; i < expected.length; i++) {
+            sel.modify('extend', 'backward', 'character');
+        }
+
+        function nodeInside(node) {
+            return node === el || (node && el.contains(node));
+        }
+
+        function restoreCaret() {
+            sel.removeAllRanges();
+            sel.addRange(originalRange);
+        }
+
+        if (sel.toString() !== expected ||
+                !nodeInside(sel.anchorNode) || !nodeInside(sel.focusNode)) {
+            restoreCaret();
+            return false;
+        }
+        return true;
+    }
+
+    function hasEmoticonBoundary(text, start) {
+        return start === 0 || !WORD_CHAR_RE.test(text.charAt(start - 1));
+    }
+
+    function maybeConvertEmoticon(e) {
+        if (window.__scEmoticonsEnabled !== true) {
+            return false;
+        }
+        if (!e.key || e.key.length !== 1 || e.isComposing ||
+                e.ctrlKey || e.altKey || e.metaKey) {
+            return false;
+        }
+        var el = focusedEditable();
+        if (!el) {
+            return false;
+        }
+        if (el.tagName === 'INPUT' &&
+                (el.getAttribute('type') || 'text').toLowerCase() === 'password') {
+            return false;
+        }
+        var before = textBeforeCaret(el, MAX_EMOTICON_LENGTH + 1);
+        if (before === null) {
+            return false;
+        }
+        var combined = before + e.key;
+        var match = emoticonMatch(combined);
+        if (!match) {
+            return false;
+        }
+        var boundaryStart = combined.length - match.emoticon.length;
+        if (!hasEmoticonBoundary(combined, boundaryStart)) {
+            return false;
+        }
+
+        // The final emoticon character has not been inserted yet. Select the
+        // preceding characters, then prevent this keypress and insert the
+        // emoji through the same input pipeline as unicode-input insertion.
+        var prefix = match.emoticon.slice(0, -1);
+        if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
+            var pos = el.selectionStart;
+            var start = pos - prefix.length;
+            if (pos !== el.selectionEnd || start < 0 ||
+                    el.value.slice(start, pos) !== prefix) {
+                return false;
+            }
+            el.setSelectionRange(start, pos);
+        } else if (!selectCharactersBeforeCaret(el, prefix)) {
+            return false;
+        }
+
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        insertInto(el, match.emoji);
+        return true;
     }
 
     function hexCharFor(e) {
@@ -234,8 +386,7 @@ UNICODE_INPUT_JS = r"""
         }
         // Fallback (e.g. editable inside a shadow root where execCommand on
         // the document can't reach the shadow selection).
-        var root = el.getRootNode ? el.getRootNode() : document;
-        var sel = (root && root.getSelection) ? root.getSelection() : window.getSelection();
+        var sel = selectionForEditable(el);
         if (!sel || sel.rangeCount === 0) {
             return;
         }
@@ -275,14 +426,12 @@ UNICODE_INPUT_JS = r"""
     }
 
     function onKeyDown(e) {
-        if (window.__scUnicodeEnabled === false) {
-            if (session) {
-                endSession();
-            }
-            return;
-        }
         var k = e.key;
         if (session) {
+            if (window.__scUnicodeEnabled === false) {
+                endSession();
+                return;
+            }
             // Re-pressing the trigger inside a session is ignored.
             if (e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey &&
                     (e.code === 'KeyU' || k === 'u' || k === 'U')) {
@@ -327,14 +476,17 @@ UNICODE_INPUT_JS = r"""
             return;
         }
         var isU = e.code === 'KeyU' || k === 'u' || k === 'U';
-        if (e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey && isU) {
+        if (window.__scUnicodeEnabled !== false &&
+                e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey && isU) {
             if (!focusedEditable()) {
                 return;
             }
             e.preventDefault();
             e.stopImmediatePropagation();
             startSession();
+            return;
         }
+        maybeConvertEmoticon(e);
     }
 
     window.addEventListener('keydown', onKeyDown, true);
@@ -354,7 +506,7 @@ UNICODE_INPUT_JS = r"""
         }
     }, true);
 })();
-"""
+""".replace("__EMOTICON_MAP_JSON__", EMOTICON_MAP_JSON)
 
 
 class UnicodeLineEditFilter(QObject):

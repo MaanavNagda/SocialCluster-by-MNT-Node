@@ -1,6 +1,10 @@
 import unittest
 
-from social_cluster.main import _is_external_host, parse_notification_count
+from social_cluster.main import (
+    _is_external_host,
+    parse_notification_count,
+    run_js_in_all_frames,
+)
 
 
 class TestParseNotificationCount(unittest.TestCase):
@@ -23,6 +27,53 @@ class TestParseNotificationCount(unittest.TestCase):
 
     def test_numeric_string(self):
         self.assertEqual(parse_notification_count("7"), 7)
+
+
+class TestRunJsInAllFrames(unittest.TestCase):
+    class FakeFrame:
+        def __init__(self, children=()):
+            self._children = list(children)
+            self.scripts = []
+
+        def runJavaScript(self, script, callback):
+            self.scripts.append(script)
+
+        def children(self):
+            return self._children
+
+    class FakePage:
+        def __init__(self, frame):
+            self._frame = frame
+            self.scripts = []
+
+        def mainFrame(self):
+            return self._frame
+
+        def runJavaScript(self, script):
+            self.scripts.append(script)
+
+    def test_runs_in_main_and_child_frames(self):
+        grandchild = self.FakeFrame()
+        child = self.FakeFrame([grandchild])
+        root = self.FakeFrame([child])
+        page = self.FakePage(root)
+        run_js_in_all_frames(page, "test-script")
+        self.assertEqual(root.scripts, ["test-script"])
+        self.assertEqual(child.scripts, ["test-script"])
+        self.assertEqual(grandchild.scripts, ["test-script"])
+        self.assertEqual(page.scripts, [])
+
+    def test_falls_back_to_page_for_older_qt(self):
+        class PageWithoutFrames:
+            def __init__(self):
+                self.scripts = []
+
+            def runJavaScript(self, script):
+                self.scripts.append(script)
+
+        page = PageWithoutFrames()
+        run_js_in_all_frames(page, "test-script")
+        self.assertEqual(page.scripts, ["test-script"])
 
 
 class TestIsExternalHost(unittest.TestCase):

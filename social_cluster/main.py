@@ -43,7 +43,12 @@ from social_cluster.config import load_config, save_config
 from social_cluster.icons import IconLoader
 from social_cluster.tray import render_tray_icon
 from social_cluster.scrapers import SCRAPERS
-from social_cluster.unicode_input import UNICODE_INPUT_JS, UnicodeLineEditFilter
+from social_cluster.emoticon_input import EmoticonLineEditConverter
+from social_cluster.unicode_input import (
+    UNICODE_INPUT_JS,
+    UnicodeLineEditFilter,
+    input_flags_js,
+)
 
 
 APP_ICON_PATH = os.path.join(os.path.dirname(__file__), "assets", "icon.png")
@@ -174,6 +179,28 @@ def parse_notification_count(result):
         return int(result)
     except (TypeError, ValueError):
         return 0
+
+
+def run_js_in_all_frames(page, script):
+    """Run JavaScript in a page's main frame and child frames when supported.
+
+    QWebEngineFrame is only available in Qt 6.8+. On older versions, fall
+    back to the page-level API, which reaches the main frame only.
+    """
+    main_frame_getter = getattr(page, "mainFrame", None)
+    if main_frame_getter is None:
+        page.runJavaScript(script)
+        return
+
+    def run(frame):
+        frame.runJavaScript(script, lambda _result: None)
+        for child in frame.children():
+            run(child)
+
+    try:
+        run(main_frame_getter())
+    except (AttributeError, RuntimeError, TypeError):
+        page.runJavaScript(script)
 
 
 # URL schemes that must never be handed to the OS: they are either script
@@ -344,10 +371,10 @@ class AppWebView(QWebEngineView):
         # depends on wrapper identity.
         self._app_page._view = self
         if main_window is not None:
-            # The page's unicode-input enable flag lives on window, so it is
-            # reset by every navigation and must be re-pushed after each load.
+            # The page's input-feature enable flags live on window, so they
+            # are reset by every navigation and must be re-pushed after load.
             self.page().loadFinished.connect(
-                lambda _ok: main_window._sync_unicode_flags()
+                lambda _ok: main_window._sync_input_flags()
             )
 
 
@@ -384,6 +411,7 @@ class MainWindow(QMainWindow):
         self._loading_grace = {}
         self._icon_loader = IconLoader(self)
         self._unicode_filter = UnicodeLineEditFilter(self._config, self._theme, self)
+        self._emoticon_converter = EmoticonLineEditConverter(self._config, self)
         self._app_icon_source = QPixmap(APP_ICON_PATH)
         self._popup_windows = []
         self._services_debounce = QTimer(self)
@@ -415,6 +443,7 @@ class MainWindow(QMainWindow):
                 "run_in_background": self._config.get("run_in_background", True),
                 "start_in_background": self._config.get("start_in_background", False),
                 "unicode_input": self._config.get("unicode_input", True),
+                "emoticons_to_emoji": self._config.get("emoticons_to_emoji", False),
                 "open_external_links": self._config.get("open_external_links", True),
             }
 
@@ -545,6 +574,8 @@ class MainWindow(QMainWindow):
         # crashes PySide6 when events reach Qt-internal C++ objects.
         self._unicode_filter.install_on(self._custom_name_edit)
         self._unicode_filter.install_on(self._custom_url_edit)
+        self._emoticon_converter.install_on(self._custom_name_edit)
+        self._emoticon_converter.install_on(self._custom_url_edit)
         add_btn = QPushButton("Add custom service", self)
         add_btn.clicked.connect(self._add_custom_service)
         custom_form.addWidget(self._custom_name_edit)
@@ -607,6 +638,11 @@ class MainWindow(QMainWindow):
         self._unicode_check.setChecked(self._config.get("unicode_input", True))
         self._unicode_check.toggled.connect(self._auto_save_settings)
         layout.addRow(self._unicode_check)
+
+        self._emoticons_check = QCheckBox("Convert typed emoticons to emoji", self)
+        self._emoticons_check.setChecked(self._config.get("emoticons_to_emoji", False))
+        self._emoticons_check.toggled.connect(self._auto_save_settings)
+        layout.addRow(self._emoticons_check)
 
         self._open_external_check = QCheckBox("Open external links in system browser", self)
         self._open_external_check.setChecked(self._config.get("open_external_links", True))
@@ -757,20 +793,20 @@ class MainWindow(QMainWindow):
     def _on_tab_load_finished(self, name):
         self._loading_grace[name] = time.time() + STARTUP_GRACE_SECONDS
 
-    def _sync_unicode_flags(self):
-        # The injected unicode-input script reads window.__scUnicodeEnabled
-        # at keydown time; push the current setting into every loaded page
-        # (service tabs, popup tabs, and popup windows).
-        enabled = "true" if self._config.get("unicode_input", True) else "false"
-        js = f"window.__scUnicodeEnabled = {enabled};"
+    def _sync_input_flags(self):
+        # The injected input script reads window.__scUnicodeEnabled and
+        # window.__scEmoticonsEnabled at keydown time; push the current
+        # settings into every loaded page (service tabs, popup tabs, and
+        # popup windows).
+        js = input_flags_js(self._config)
         for i in range(self._web_stack.count()):
             view = self._web_stack.widget(i)
             if isinstance(view, QWebEngineView) and view.page() is not None:
-                view.page().runJavaScript(js)
+                run_js_in_all_frames(view.page(), js)
         for window in self._popup_windows:
             for view in window.findChildren(QWebEngineView):
                 if view.page() is not None:
-                    view.page().runJavaScript(js)
+                    run_js_in_all_frames(view.page(), js)
 
     def _in_startup_grace(self, name):
         return time.time() < self._loading_grace.get(name, 0)
@@ -1073,13 +1109,14 @@ class MainWindow(QMainWindow):
         self._config["run_in_background"] = self._background_check.isChecked()
         self._config["start_in_background"] = self._start_in_background_check.isChecked()
         self._config["unicode_input"] = self._unicode_check.isChecked()
+        self._config["emoticons_to_emoji"] = self._emoticons_check.isChecked()
         self._config["open_external_links"] = self._open_external_check.isChecked()
         save_config(self._config)
 
         self._theme = get_theme(self._config["theme"], self._config["dark_mode"])
         self._apply_theme()
         self._apply_tab_position()
-        self._sync_unicode_flags()
+        self._sync_input_flags()
 
         app = QApplication.instance()
         if app is not None:
@@ -1089,7 +1126,7 @@ class MainWindow(QMainWindow):
         for key in (
             "theme", "dark_mode", "tab_position", "minimize_to_tray",
             "run_in_background", "start_in_background", "unicode_input",
-            "open_external_links",
+            "emoticons_to_emoji", "open_external_links",
         ):
             self._config[key] = self._snapshots["settings"][key]
         save_config(self._config)
@@ -1100,6 +1137,7 @@ class MainWindow(QMainWindow):
         self._background_check.setChecked(self._config["run_in_background"])
         self._start_in_background_check.setChecked(self._config["start_in_background"])
         self._unicode_check.setChecked(self._config["unicode_input"])
+        self._emoticons_check.setChecked(self._config["emoticons_to_emoji"])
         self._open_external_check.setChecked(self._config["open_external_links"])
         self._auto_save_settings()
 
@@ -1112,6 +1150,7 @@ class MainWindow(QMainWindow):
             "run_in_background": True,
             "start_in_background": False,
             "unicode_input": True,
+            "emoticons_to_emoji": False,
             "open_external_links": True,
         }
         for key, value in defaults.items():
@@ -1124,6 +1163,7 @@ class MainWindow(QMainWindow):
         self._background_check.setChecked(self._config["run_in_background"])
         self._start_in_background_check.setChecked(self._config["start_in_background"])
         self._unicode_check.setChecked(self._config["unicode_input"])
+        self._emoticons_check.setChecked(self._config["emoticons_to_emoji"])
         self._open_external_check.setChecked(self._config["open_external_links"])
         self._auto_save_settings()
 
@@ -1417,6 +1457,8 @@ def main():
     if os.path.exists(APP_ICON_PATH):
         app.setWindowIcon(QIcon(APP_ICON_PATH))
 
+    config = load_config()
+
     # Use a current Chrome user agent so sites like WhatsApp Web allow the browser.
     user_agent = (
         "Mozilla/5.0 (X11; Linux x86_64) "
@@ -1451,13 +1493,14 @@ def main():
     script_deferred.setRunsOnSubFrames(True)
     profile.scripts().insert(script_deferred)
 
-    # Ctrl+Shift+U unicode codepoint entry inside web-app text fields
-    # (QtWebEngine doesn't route IBus's unicode input to web content).
-    # DocumentCreation so the keydown listener exists before the page can
-    # receive input; the script is dormant until the shortcut is pressed.
+    # Ctrl+Shift+U unicode codepoint entry and optional typed-emoticon
+    # conversion inside web-app text fields (QtWebEngine doesn't route IBus's
+    # unicode input to web content). DocumentCreation so the keydown listener
+    # exists before the page can receive input; both features read their
+    # per-page enable flags only when keys are pressed.
     script_unicode = QWebEngineScript()
     script_unicode.setName("unicode-input")
-    script_unicode.setSourceCode(UNICODE_INPUT_JS)
+    script_unicode.setSourceCode(input_flags_js(config) + "\n" + UNICODE_INPUT_JS)
     script_unicode.setInjectionPoint(QWebEngineScript.DocumentCreation)
     script_unicode.setWorldId(QWebEngineScript.MainWorld)
     script_unicode.setRunsOnSubFrames(True)
@@ -1482,7 +1525,6 @@ def main():
         sys.exit(1)
     app.aboutToQuit.connect(lock.unlock)
 
-    config = load_config()
     app.setQuitOnLastWindowClosed(not config.get("run_in_background", True))
 
     window = MainWindow(config, profile)

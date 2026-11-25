@@ -12,6 +12,7 @@ from social_cluster.unicode_input import (
     UNICODE_INPUT_JS,
     UnicodeLineEditFilter,
     hex_to_char,
+    input_flags_js,
 )
 
 _TEST_THEME = {"panel": "#222222", "fg": "#eeeeee", "primary": "#3498db"}
@@ -64,6 +65,9 @@ class TestInjectedScript(unittest.TestCase):
     def test_script_pieces(self):
         for needle in (
             "__scUnicodeEnabled",
+            "__scEmoticonsEnabled",
+            "EMOTICON_MAP",
+            "maybeConvertEmoticon",
             "KeyU",
             "keydown",
             "insertText",
@@ -72,8 +76,31 @@ class TestInjectedScript(unittest.TestCase):
         ):
             self.assertIn(needle, UNICODE_INPUT_JS)
 
+    def test_emoticons_default_off_in_script(self):
+        self.assertIn("window.__scEmoticonsEnabled !== true", UNICODE_INPUT_JS)
+        self.assertIn('"<3":"❤️"', UNICODE_INPUT_JS)
+
     def test_config_default(self):
         self.assertTrue(DEFAULT_CONFIG["unicode_input"])
+
+
+class TestInputFlagsJs(unittest.TestCase):
+    def test_default_flags(self):
+        self.assertEqual(
+            input_flags_js(dict(DEFAULT_CONFIG)),
+            "window.__scUnicodeEnabled = true;"
+            "window.__scEmoticonsEnabled = false;",
+        )
+
+    def test_enabled_flags(self):
+        config = dict(DEFAULT_CONFIG)
+        config["unicode_input"] = False
+        config["emoticons_to_emoji"] = True
+        self.assertEqual(
+            input_flags_js(config),
+            "window.__scUnicodeEnabled = false;"
+            "window.__scEmoticonsEnabled = true;",
+        )
 
 
 class TestUnicodeLineEditFilter(unittest.TestCase):
